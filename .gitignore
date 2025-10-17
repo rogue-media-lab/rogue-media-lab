@@ -1,0 +1,21 @@
+# === Obsidian Vault .gitignore ===
+# This tracks documentation, notes, and planning
+# Code repos (RML-Soundscape, RML-SalesGym) are ignored here and tracked in their own repos
+
+# Ignore nested code repositories
+RML-Soundscape/
+RML-SalesGym/
+Portfolio-App/
+RML-Hermits/
+RML-Voyager/
+
+# Obsidian workspace files (personal settings, don't need to sync)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Claude internal folder
+.claude/
