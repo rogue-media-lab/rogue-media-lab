@@ -1,7 +1,6 @@
----
 # Rogue Media Lab
 
-**Building Better Worlds.** (_Results may vary._)
+**Building Better Worlds.** _(Results may vary.)_
 
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fwww.roguemedialab.com&style=flat-square&label=roguemedialab.com)](https://www.roguemedialab.com)
 
@@ -11,7 +10,7 @@ and tools for the people who make things on the internet.
 
 One developer. Several ambitious ideas. Questionable timelines.
 
----
+***
 
 ## Active Projects
 
@@ -40,7 +39,7 @@ Vehicle maintenance, reimagined around the customer. Connects service advisors,
 technicians, and car owners into a single shared view. Everyone in the loop.
 Nobody left guessing.
 
----
+***
 
 ## Utilities
 
@@ -52,7 +51,7 @@ Does what it says.
 Proprietary AI operations CLI. Integrates Claude and Gemini for studio management
 and active development. Not for public deployment.
 
----
+***
 
 ## Stack
 
@@ -65,7 +64,7 @@ and active development. Not for public deployment.
 ![Claude](https://img.shields.io/badge/Claude-D97757?style=flat-square&logo=anthropic&logoColor=white)
 ![Gemini](https://img.shields.io/badge/Gemini-8E75B2?style=flat-square&logo=googlegemini&logoColor=white)
 
----
+***
 
 ## The Lab
 
@@ -77,5 +76,3 @@ Clients welcome. Collaborators considered. Chaos expected.
 
 **[roguemedialab.com](https://www.roguemedialab.com) · Rock Hill, SC · [![Reddit](https://img.shields.io/badge/Reddit-u%2FRogue--Medi
 a--Lab-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://reddit.com/u/Rogue-Media-Lab)**
-
----
