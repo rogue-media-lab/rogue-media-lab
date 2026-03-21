@@ -74,5 +74,4 @@ a preference for Rails, and an unreasonable number of side projects.
 
 Clients welcome. Collaborators considered. Chaos expected.
 
-**[roguemedialab.com](https://www.roguemedialab.com) · Rock Hill, SC · [![Reddit](https://img.shields.io/badge/Reddit-u%2FRogue--Medi
-a--Lab-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://reddit.com/u/Rogue-Media-Lab)**
+**[roguemedialab.com](https://www.roguemedialab.com) · Rock Hill, SC · [![Reddit](https://img.shields.io/badge/Reddit-u%2FRogue--Media--Lab-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://reddit.com/u/Rogue-Media-Lab)**
