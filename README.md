@@ -4,7 +4,7 @@
 
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fwww.roguemedialab.com&style=flat-square&label=roguemedialab.com)](https://www.roguemedialab.com)
 
-![Notary Scholar](screenshots/RogueMediaLab-banner.png)
+![Rogue Media Lab](screenshots/RogueMediaLab-banner.png)
 
 Rogue Media Lab is a boutique development studio operating out of Rock Hill, SC.
 We design and build creative web platforms — social communities, digital marketplaces,
