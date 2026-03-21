@@ -1,7 +1,7 @@
 ---
 # Rogue Media Lab
 
-**Building Better Worlds.** *(Results may vary.)*
+**Building Better Worlds.** _(Results may vary.)_
 
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fwww.roguemedialab.com&style=flat-square&label=roguemedialab.com)](https://www.roguemedialab.com)
 
