@@ -242,6 +242,18 @@ Rails 8 uses Propshaft as the default asset pipeline (replacing Sprockets). Prop
 - Sprockets (old way): Required `@import` and `require` directives in manifest files
 - Propshaft is simpler but you MUST use `:app` to load the full stylesheet bundle
 
+**Propshaft requires a manifest file for images (MUST):**
+Without `app/assets/config/manifest.js`, images in `app/assets/images/` are NOT precompiled. `image_tag "reference/photo.jpg"` generates a 404 even if the file exists.
+
+```javascript
+// app/assets/config/manifest.js — MUST exist (mkdir -p if needed)
+//= link_tree ../images
+```
+
+The directory `app/assets/config/` is NOT auto-created by Rails — create it manually.
+
+**Propshaft discovers assets at boot time, not on-the-fly.** If you add new images while the server is running, you get `Propshaft::MissingAssetError`. Restart the server after adding new image assets.
+
 ### R8-7: Importmap Configuration for Stimulus & JavaScript (SHOULD)
 Rails 8 uses importmap for managing JavaScript dependencies without Node.js/npm.
 
@@ -366,8 +378,8 @@ production:
   adapter: solid_cable
   connects_to:
     database:
-      writing: :primary  # Changed from :cable
-  polling_interval: 0.1
+      writing: primary  # Solid Cable 4.0+ uses 'primary' (not 'cable')
+  polling_interval: 0.1.seconds
   message_retention: 1.day
 ```
 
@@ -375,21 +387,22 @@ production:
 ```yaml
 # config/cache.yml
 production:
-  primary:
-    database: :primary  # Changed from :cache
-    store_options:
-      max_age: <%= 60.days.to_i %>
-      max_size: <%= 256.megabytes %>
+  <<: *default
+  # No connects_to needed — Solid Cache connects to :primary by default
+  # Remove any existing database: cache entry
+  store_options:
+    max_age: <%= 60.days.to_i %>
+    max_size: <%= 256.megabytes %>
 ```
 
-**Step 8: Update production.rb**
+**Step 8: Update production.rb (CRITICAL)**
 ```ruby
 # config/environments/production.rb
 
-# Remove this line:
-# config.solid_queue.connects_to = { database: { writing: :queue } }
+# Solid Queue reads connects_to from production.rb, NOT queue.yml.
+# This is the #1 Solid Queue deployment error — setting it in queue.yml has no effect.
+config.solid_queue.connects_to = { database: { writing: :primary } }
 
-# Keep these:
 config.cache_store = :solid_cache_store
 config.active_job.queue_adapter = :solid_queue
 ```
@@ -401,6 +414,13 @@ config.active_job.queue_adapter = :solid_queue
 # Change from :inline to :solid_queue to match production behavior
 config.active_job.queue_adapter = :solid_queue
 ```
+
+**Key rules for single-database Solid Trifecta:**
+- All three `connects_to` targets must be `:primary` (not `:queue`, `:cable`, or `:cache`)
+- Solid Queue reads `connects_to` from `production.rb` — NOT `queue.yml`. Setting it in queue.yml has no effect.
+- Solid Cache connects to `:primary` by default if no `database:` key is specified — remove old `database: cache` entries
+- Solid Cable 4.0+ uses `primary` as the `connects_to` target when all three Solid gems share a single database
+- The error `The 'queue' database is not configured for the 'production' environment` comes from production.rb pointing to `:queue` instead of `:primary`
 
 #### Verification
 
@@ -477,6 +497,379 @@ end
 **Naming convention that avoids this:**
 - If join model's `belongs_to :widget` matches the target model, no `source:` needed
 - If join model's `belongs_to :special_widget` but target is `Widget`, use `source: :special_widget`
+
+### R8-10: Tailwind CSS v4 Configuration (MUST)
+
+Rails 8 uses `tailwindcss-rails` v4.x which uses **CSS-based configuration**, NOT JavaScript. Do NOT create `tailwind.config.js` — it is for v3 only.
+
+**Define custom theme in `app/assets/tailwind/application.css`:**
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-navy: #1A237E;
+  --color-deep-red: #A10035;
+  --color-gold: #FDD835;
+  --color-green: #66BB6A;
+  --color-cream: #FFF8E1;
+  --font-display: "Lilita One", cursive;
+  --font-body: "Nunito", sans-serif;
+}
+```
+
+Then use: `class="bg-navy text-gold font-display"`
+
+**Build commands:**
+```bash
+bin/rails tailwindcss:build    # One-shot build
+bin/rails tailwindcss:watch    # Watch mode for development
+```
+
+**Pitfall: `tailwindcss:build` fails with "Database URL cannot be empty":**
+If `DATABASE_URL` is set as an empty string in the shell environment (`DATABASE_URL=`), Rails crashes. Fix: `unset DATABASE_URL` before running the build command. This is a shell state issue, not a project config bug.
+
+### R8-11: bin/dev and Tailwind Watch Issues (SHOULD)
+
+**Pitfall: `bin/dev` kills web server when Tailwind CSS v4 build exits:**
+Tailwind CSS v4 runs as a one-shot build in the Procfile (`css: bin/rails tailwindcss:watch`). When the initial build completes (exits with code 0), Foreman interprets this as "a process exited" and sends SIGTERM to ALL processes — including the web server.
+
+**Fix — start the Rails server directly:**
+```bash
+unset DATABASE_URL && bin/rails server -p 3000
+```
+
+If you need live CSS rebuilding during development, run Tailwind in a separate terminal:
+```bash
+# Terminal 1
+bin/rails tailwindcss:watch
+
+# Terminal 2
+bin/rails server -p 3000
+```
+
+---
+
+## 1.5. Routing Deep Dive
+
+Rails routing has several patterns that look similar but behave differently. Getting these wrong causes silent failures — no error, just wrong helpers or 404s.
+
+### RT-1: `scope` vs `namespace` — Helper Naming (MUST)
+
+**`scope` does NOT prefix route helpers.** `namespace` DOES prefix them.
+
+```ruby
+# scope — NO prefix on helpers
+scope "/carus", module: nil do
+  namespace :manager, module: "car_us/manager" do
+    root to: "dashboard#index"   # → manager_root_path (NOT carus_manager_root_path)
+  end
+end
+
+# namespace — DOES prefix helpers
+namespace :milk_admin do
+  resources :restaurants         # → milk_admin_restaurants_path
+end
+```
+
+**Rule:** After defining routes, always run `bin/rails routes --grep <path>` to verify exact helper names. Do not assume the prefix pattern — check.
+
+### RT-2: `param: :slug` Changes Param Key (MUST)
+
+When a route uses `resources :things, param: :slug`, Rails renames the URL segment from `:id` to `:slug`. The controller must use `params[:slug]`, NOT `params[:id]`.
+
+```ruby
+# Route:
+resources :shops, param: :slug
+# URL: /admin/shops/habibi-mobile → params[:slug] = "habibi-mobile", params[:id] = nil
+
+# WRONG — params[:id] is nil → RecordNotFound
+def set_shop
+  @shop = Shop.find_by!(slug: params[:id])
+end
+
+# RIGHT
+def set_shop
+  @shop = Shop.find_by!(slug: params[:slug])
+end
+```
+
+The model MUST also override `to_param` so path helpers generate slug-based URLs:
+```ruby
+def to_param
+  slug
+end
+```
+
+Without this, `shops_path(shop)` generates `/admin/shops/1` (numeric ID) instead of `/admin/shops/habibi-mobile`.
+
+### RT-3: `to_param` Override Breaks `find()` (MUST)
+
+When a model overrides `to_param` to return a slug, `find()` expects a numeric ID but `params[:id]` is now the slug string.
+
+```ruby
+# WRONG — finds by numeric ID, but params[:id] is "el-mexicano"
+@restaurant = Restaurant.find(params[:id])  # ActiveRecord::RecordNotFound
+
+# RIGHT — find by slug
+@restaurant = Restaurant.find_by!(slug: params[:id])
+```
+
+**Rule:** Always use `find_by!` on the slug column when the model overrides `to_param`. Check ALL controllers that interact with the model — not just the public-facing ones.
+
+### RT-4: Catch-All Scope Eats Specific Routes (MUST)
+
+A `scope "/:param_slug"` block is a catch-all. If it comes BEFORE a `namespace` block, it intercepts the namespace routes.
+
+```ruby
+# WRONG — scope catches /milk_admin as a restaurant_slug
+scope "/:restaurant_slug" do
+  get "/", to: "restaurants/pages#home"
+end
+namespace :milk_admin do
+  resources :restaurants  # never reached! /milk_admin/restaurants → "Restaurant not found"
+end
+
+# RIGHT — namespace first, then catch-all
+namespace :milk_admin do
+  resources :restaurants  # matches /milk_admin/restaurants
+end
+scope "/:restaurant_slug" do
+  get "/", to: "restaurants/pages#home"  # catches everything else
+end
+```
+
+**Rule:** Always put specific routes (namespaces, resources) BEFORE any catch-all `scope "/:param"` blocks.
+
+### RT-5: `form_with` with Scope Routing (MUST)
+
+When routes use `scope "/path", module: nil` (not full `namespace`), `form_with model: [:namespace, @record]` generates a wrong route helper.
+
+```erb
+<%# WRONG — generates manager_car_us_service_path which doesn't exist %>
+<%= form_with model: [:manager, @service] do |f| %>
+
+<%# RIGHT — use explicit url: %>
+<%= form_with model: @service, url: (@service.persisted? ? manager_service_path(@service) : manager_services_path) do |f| %>
+```
+
+**Rule:** When using `scope` routing with `module:`, always pass explicit `url:` to `form_with`.
+
+### RT-6: Nested Resources (SHOULD)
+
+```ruby
+# config/routes.rb
+resources :albums do
+  resources :songs
+end
+
+# Helper: album_songs_path(@album) → /albums/1/songs
+# Helper: album_song_path(@album, @song) → /albums/1/songs/3
+```
+
+Use `shallow: true` when nested resources are also accessed independently:
+```ruby
+resources :albums, shallow: true do
+  resources :songs
+end
+# /albums/1/songs — index (nested)
+# /songs/3 — show, edit, update, destroy (shallow, no album prefix needed)
+```
+
+### RT-7: Member and Collection Routes (SHOULD)
+
+```ruby
+resources :songs do
+  member do
+    patch :publish    # /songs/1/publish → song_path(@song, action: :publish)
+    get :preview       # /songs/1/preview
+  end
+
+  collection do
+    get :search        # /songs/search → search_songs_path
+  end
+end
+```
+
+---
+
+## 1.6. View Architecture
+
+Rails views should be modular, reusable, and follow a design-system approach. The layout file is sacred — it stays clean and delegates everything to partials.
+
+### VA-1: Layout File Rules (MUST)
+
+`app/views/layouts/application.html.erb` should ONLY contain:
+- HTML head (doctype, meta tags, csrf, csp, stylesheet links, importmap)
+- Body tag with base classes
+- Flash message partial render
+- Navbar partial render
+- `<main>` with `yield`
+- Footer partial render
+
+**The layout does NOT contain:**
+- Nav markup (it renders the partial)
+- Footer markup (it renders the partial)
+- Inline styles
+- CSS variables
+- Custom CSS blocks
+- Sub-project-specific conditionals beyond a simple `controller_name` check for which navbar to show
+
+```erb
+<!-- app/views/layouts/application.html.erb — CLEAN -->
+<!DOCTYPE html>
+<html>
+<head>
+  <title><%= content_for?(:title) ? yield(:title) : "App Name" %></title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="<%= content_for?(:description) ? yield(:description) : "Default" %>">
+  <%= csrf_meta_tags %>
+  <%= csp_meta_tag %>
+  <link href="https://fonts.googleapis.com/css2?family=Example:wght@400;600;700&display=swap" rel="stylesheet">
+  <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
+  <%= javascript_importmap_tags %>
+</head>
+<body class="bg-cream text-brown font-body min-h-screen">
+  <%= render "shared/navbar" %>
+  <%= render "shared/flash_messages" %>
+  <main>
+    <%= yield %>
+  </main>
+  <%= render "shared/footer" %>
+</body>
+</html>
+```
+
+### VA-2: Partials as Design System (MUST)
+
+Every repeated UI element is a partial. Think modular, reusable, consistent.
+
+**Required shared partials:**
+```
+app/views/shared/
+├── _navbar.html.erb        # Main navigation
+├── _footer.html.erb         # Footer
+├── _flash_messages.html.erb # Toast notifications
+├── _card.html.erb           # Generic card component
+├── _section_header.html.erb # Section title + subtitle pattern
+└── _cta_buttons.html.erb    # Call-to-action button pairs
+```
+
+**Page composition pattern:**
+```erb
+<!-- app/views/pages/home.html.erb -->
+<%= render "pages/hero" %>
+<%= render "pages/featured_items" %>
+<%= render "pages/our_story" %>
+<%= render "pages/contact_section" %>
+```
+
+Each section is its own partial. The home page is just a composition of sections.
+
+### VA-3: `content_for` Patterns (SHOULD)
+
+Use `content_for` to inject page-specific content into the layout without modifying the layout file.
+
+**Page title and meta description:**
+```erb
+<% content_for :title, "About Us" %>
+<% content_for :description, "Learn about our story" %>
+```
+
+**Per-page body class (lightest touch for sub-projects):**
+```erb
+<%# In the view: %>
+<% content_for :body_class, "bg-dark-primary" %>
+
+<%# In the layout: %>
+<body class="<%= content_for?(:body_class) ? yield(:body_class) : 'bg-base-light' %>">
+```
+
+**Head content (preconnect, preload, widget globals):**
+```erb
+<% content_for :head do %>
+  <link rel="preconnect" href="https://widget.example.com">
+  <link rel="preload" as="script" href="https://widget.example.com/controller.min.js">
+<% end %>
+
+<%# In the layout <head>: %>
+<%= content_for?(:head) ? yield(:head) : "" %>
+```
+
+### VA-4: Sub-Project Isolation (MUST for multi-tenant apps)
+
+Multi-tenant and portfolio apps often host distinct sub-projects that should feel like separate sites. Each sub-project MUST be self-contained.
+
+**Dedicated layout file (preferred for full sub-projects):**
+```ruby
+class HermitSeasonsController < ApplicationController
+  layout "hermit_plus"
+end
+```
+```erb
+<!-- app/views/layouts/hermit_plus.html.erb -->
+<%= render "shared/hermit_plus_nav" %>
+<main class="min-h-screen pt-20">
+  <%= yield %>
+</main>
+<%= render "shared/hermits_footer" %>
+```
+
+**Page-level rendering (for single-page sub-projects):**
+Render chrome from the view itself, NOT from a conditional in the main layout:
+```erb
+<!-- app/views/hermit_plus/landing.html.erb (end of file) -->
+</section>
+<%= render "shared/hermits_footer" %>
+```
+
+**WRONG — modifying application layout for a sub-project:**
+```erb
+<!-- app/views/layouts/application.html.erb — NEVER DO THIS -->
+<% if controller_name == "hermit_plus" %>
+  <%= render "shared/hermits_footer" %>
+<% end %>
+```
+
+**Rules:**
+1. `layouts/application.html.erb` is SACRED — no sub-project conditionals beyond a simple navbar check
+2. Each sub-project gets its own navbar and footer partials
+3. Sub-project colors are defined in the global Tailwind theme but only appear in sub-project views
+4. Use `content_for(:body_class)` for per-page body background overrides
+5. Dedicated layouts for multi-view sub-projects; page-level rendering for single-view sub-projects
+
+### VA-5: Mobile-First Responsive Design (MUST)
+
+Follow mobile-first Tailwind patterns. Default classes apply to mobile; add `sm:`, `md:`, `lg:` for larger screens.
+
+| Prefix | Min Width | Typical Use |
+|--------|-----------|-------------|
+| (none) | 0px | Mobile default |
+| `sm:` | 640px | Large phones |
+| `md:` | 768px | Tablets |
+| `lg:` | 1024px | Desktops |
+
+**Common conversions:**
+- Fixed width: `width: 560px` → `w-full lg:w-[560px]`
+- Padding: `padding: 80px` → `px-6 lg:px-20 py-12 lg:py-20`
+- Flex layouts: `display: flex` → `flex flex-col lg:flex-row gap-8 lg:gap-32`
+- Grids: `grid-template-columns` → `grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6`
+
+**Pitfalls:**
+- Forgetting `flex-wrap` on button groups
+- Hidden content on mobile (use `hidden lg:flex` for decorative elements, never critical content)
+- Touch targets too small (minimum `py-3 px-6`)
+- Fixed navbar + `pt-16` on `<main>` + `py-8` on child view = double gap. Child views should use `pt-2` or `pt-4` at most.
+- Margin vs padding for colored sections: margin reveals body background, padding extends section color. Use padding when space must share the section's background.
+
+### VA-6: Tailwind-Only Styling (MUST)
+
+**NEVER use `style=""` attributes in ERB views.** Use Tailwind classes for everything.
+
+**Exceptions (ONLY these cases allow inline styles):**
+1. Dynamic values from database (user-set colors from SiteSetting)
+2. Google Maps iframe (`style="border:0;"` is required)
+3. Stimulus animation targets (`style="transform:translateX(120%);opacity:0"` for initial state)
+4. Background images from Active Storage (`style="background-image: url(...)"`)
 
 ---
 
@@ -1194,30 +1587,155 @@ updateNowPlaying(event) {
 }
 ```
 
-### H-5: Turbo Streams for Live Updates (SHOULD)
-Use Turbo Streams for real-time updates from server:
+### H-5: Turbo Streams for Live Updates — Broadcasting (SHOULD)
+
+Use Turbo Streams for real-time updates pushed from the server via Action Cable (broadcasting pattern — one user's change appears on another's screen):
 
 ```ruby
-# ✅ Good: Controller responds with Turbo Stream
-class Admin::SongsController < ApplicationController
-  def create
-    @song = Song.new(song_params)
+# Model Broadcasting:
+class Order < ApplicationRecord
+  after_create_commit { broadcast_prepend_to "admin_orders", target: "orders-list" }
+  after_update_commit { broadcast_replace_to "admin_orders" }
+end
 
-    if @song.save
-      respond_to do |format|
-        format.turbo_stream do
-          render turbo_stream: turbo_stream.append(
-            "songs_list",
-            partial: "admin/songs/song",
-            locals: { song: @song }
-          )
-        end
-        format.html { redirect_to admin_songs_path }
-      end
+# View Subscription:
+<%= turbo_stream_from "admin_orders" %>
+<div id="orders-list">
+  <% @orders.each do |order| %>
+    <%= render partial: "admin/orders/order", locals: { order: order } %>
+  <% end %>
+</div>
+```
+
+See H-6 for the more common **form-return stream** pattern (no Action Cable needed).
+
+### H-6: Form-Return Turbo Streams (MUST)
+
+The broadcasting pattern (H-5) is for server-pushed updates over Action Cable. It is NOT the pattern for the much more common case: **a form submits, the controller responds with a `*.turbo_stream.erb` that appends/replaces/removes an element — no Action Cable, no full-page reload.**
+
+Key distinctions from broadcasting:
+- Driven by `respond_to { |f| f.turbo_stream; f.html { redirect } }` in the controller — NOT by model callbacks
+- The form lives in a Turbo **Frame** (the workbench); the create/update/destroy action returns a Turbo **Stream** (the delivery truck) that can target any id on the page
+- Validation failures MUST `render :new/:edit, status: :unprocessable_entity` so Turbo swaps the form back in with errors; a plain 200 is silently swallowed
+
+```ruby
+# Controller
+def create
+  @item = Item.new(item_params)
+  respond_to do |format|
+    if @item.save
+      format.turbo_stream  # renders create.turbo_stream.erb
+      format.html { redirect_to items_path, notice: "Created" }
+    else
+      format.turbo_stream { render :new, status: :unprocessable_entity }
+      format.html { render :new, status: :unprocessable_entity }
     end
   end
 end
 ```
+
+```erb
+<%# create.turbo_stream.erb — append new item, reset form %>
+<%= turbo_stream.append "items-list", partial: "items/item", locals: { item: @item } %>
+<%= turbo_stream.replace "item_form", partial: "items/form", locals: { item: Item.new } %>
+```
+
+**Stream `replace`/`remove` target via `dom_id(record)`**, so the item partial's root element id must be `dom_id(record)`.
+
+### H-7: Turbo Frame "Content Missing" (MUST)
+
+When a layout uses `<%= turbo_frame_tag "dashboard_content" %>` and sidebar links target it with `data: { turbo_frame: "dashboard_content" }`, EVERY view loaded via those links MUST wrap its content in the matching frame tag:
+
+```erb
+<%= turbo_frame_tag "dashboard_content" do %>
+  <%# your content here %>
+<% end %>
+```
+
+**Symptom:** Clicking a sidebar link shows "Content missing" in the frame area. HTTP 200 but Turbo rejects the response because it doesn't contain a matching `<turbo-frame>` element.
+
+**Rule:** Wrap every view rendered into a frame with the matching `turbo_frame_tag`. This includes index, show, new, edit, and any partials loaded as full-page responses.
+
+### H-8: Turbo Setup Checklist (MUST)
+
+If Turbo Streams silently fail, check in order:
+
+1. `@hotwired/turbo-rails` pinned in `config/importmap.rb`?
+   ```ruby
+   pin "@hotwired/turbo-rails", to: "turbo.min.js"
+   ```
+2. `import "@hotwired/turbo-rails"` in `app/javascript/application.js`?
+3. `turbo_stream_from` in the view (for broadcasting)?
+4. Model has `after_create_commit` / `after_update_commit` (for broadcasting)?
+5. Action Cable mounted in routes? `mount ActionCable.server => "/cable"`
+6. Production: Solid Cable adapter configured in `cable.yml`?
+
+**`@hotwired/turbo-rails` not being pinned is the #1 cause of "Turbo Streams not working."** Without it, Turbo does NOT load. No Turbo Streams. No Action Cable. Nothing.
+
+### H-9: Never Disable Turbo on Forms (MUST)
+
+```erb
+<%# WRONG — disables Turbo, breaks stream response %>
+<%= form_with model: @contact, local: true do |f| %>
+
+<%# RIGHT — Turbo handles the response %>
+<%= form_with model: @contact do |f| %>
+```
+
+`local: true` forces a full page reload and prevents Turbo Stream responses from working. Never use it.
+
+### H-10: `button_to` for DELETE Actions (MUST)
+
+Use `button_to` for DELETE actions to ensure reliable Turbo behavior:
+
+```erb
+<%# PREFERABLE %>
+<%= button_to "Delete", item_path(@item), method: :delete, class: "..." %>
+```
+
+### H-11: Third-Party Script Embeds via Stimulus (SHOULD)
+
+When embedding a third-party widget (HoneyBook, chat widgets, analytics) that ships as a raw `<script>` tag, do NOT drop the `<script>` into the view. Use a Stimulus controller that injects the script dynamically.
+
+```javascript
+// app/javascript/controllers/honeybook_controller.js
+import { Controller } from "@hotwired/stimulus"
+
+export default class extends Controller {
+  connect() {
+    // Guard: only inject once (Turbo navigation may reconnect)
+    if (document.querySelector('script[src*="placement-controller"]')) return
+
+    const script = document.createElement("script")
+    script.type = "text/javascript"
+    script.async = true
+    script.src = "https://widget.example.com/controller.min.js"
+    document.body.appendChild(script)
+  }
+}
+```
+
+```erb
+<% content_for :head do %>
+  <link rel="preconnect" href="https://widget.example.com">
+  <link rel="preload" as="script" href="https://widget.example.com/controller.min.js">
+<% end %>
+
+<div data-controller="honeybook" class="max-w-3xl mx-auto bg-white rounded-xl shadow-sm p-8">
+  <div class="hb-p-XXXXX-1"></div>
+</div>
+```
+
+**Performance:** Preconnect + preload in `<head>` cuts widget load time from 15-20s to 2-4s.
+
+### H-12: Stimulus Controller Rules (MUST)
+
+- One controller per file, named with underscores: `toast_controller.js`
+- Use `static values` for configuration, not data attributes read manually
+- Always handle `disconnect()` to clean up timers/listeners
+- Never use inline `onclick` — always `data-action="click->controller#method"`
+- Controller names map to data attributes: `player_controller.js` → `data-controller="player"`
+- If `data-controller` isn't connecting, check importmap.rb and application.js first
 
 ---
 
@@ -1300,6 +1818,44 @@ class AudioAnalysisJob < ApplicationJob
 end
 ```
 
+### S-5: ActiveStorage `attach` Is Async — Pass Raw File for Processing (MUST)
+
+`record.photo.attach(params[:photo])` uploads to S3 asynchronously. `photo.attached?` returns false immediately after `attach` if S3 hasn't completed. Passing the attachment to a service for synchronous processing fails with `NoMethodError: undefined method 'read'`.
+
+```ruby
+# WRONG — attachment isn't available yet
+message.photo.attach(params[:photo])
+process_photo(message.photo)  # ActiveStorage::Attached::One, no .read method
+
+# RIGHT — raw file for processing, attachment for persistence
+message.photo.attach(params[:photo]) if params[:photo].present?
+process_photo(params[:photo])  # ActionDispatch::Http::UploadedFile, immediate .read
+```
+
+```ruby
+# Service accepts raw file
+def process_photo(raw_upload)
+  return unless raw_upload.present?
+  raw_upload.read  # works immediately
+end
+```
+
+**Pattern:** Pass `params[:photo]` (raw) as a separate parameter to service methods alongside the persisted record. The ActiveStorage attachment is for display only, not for synchronous processing.
+
+### S-6: Active Storage URL Generation in API Context (MUST)
+
+`url_for(attachment)` in a controller context does NOT know the request host (API requests are headless). Pass `host:` explicitly:
+
+```ruby
+def url_for(attachment)
+  Rails.application.routes.url_helpers.rails_blob_url(
+    attachment, host: ENV.fetch("API_HOST_URL", "https://app-name.herokuapp.com")
+  )
+end
+```
+
+Set `API_HOST_URL` to the custom domain in production. Fall back to the Heroku default.
+
 ---
 
 ## 7. Authentication & Authorization
@@ -1367,6 +1923,126 @@ end
 namespace :admin do
   resources :songs
   resources :albums
+end
+```
+
+### A-4: Devise `scoped_views` Requirement (MUST)
+
+When you run `bin/rails generate devise:views users`, the generator creates views under `app/views/users/`. But Devise only uses them if `config.scoped_views = true` is set in `config/initializers/devise.rb`.
+
+**Symptom:** Styled `app/views/users/sessions/new.html.erb` is silently ignored. The rendered login page shows the generic Devise form. HTTP 200, no error — submit button reads "Log in" (I18n default) instead of your custom label.
+
+**Fix:**
+```ruby
+# config/initializers/devise.rb
+Devise.setup do |config|
+  config.scoped_views = true
+end
+```
+Restart the server — initializer changes require a reboot.
+
+### A-5: `after_sign_up_path_for` Is Shadowed by Devise (MUST)
+
+`Devise::RegistrationsController` defines its own `after_sign_up_path_for`, which shadows anything defined in `ApplicationController`.
+
+**Symptom:** `after_sign_up_path_for` in ApplicationController returns `/dashboard` but redirect goes elsewhere. No error.
+
+**Fix:** Create a custom registrations controller:
+```ruby
+class Users::RegistrationsController < Devise::RegistrationsController
+  protected
+  def after_sign_up_path_for(resource)
+    "/dashboard"
+  end
+end
+```
+```ruby
+# routes.rb
+devise_for :users, controllers: { registrations: "users/registrations" }
+```
+
+### A-6: `after_sign_in_path_for` Goes in ApplicationController (MUST)
+
+Unlike sign-up, sign-in routing is checked by `Devise::SessionsController` from `ApplicationController`. Putting it in a custom `RegistrationsController` has zero effect on sign-in.
+
+```ruby
+# app/controllers/application_controller.rb
+def after_sign_in_path_for(resource)
+  case resource
+  when User
+    dashboard_path
+  when Admin
+    admin_root_path
+  else
+    super
+  end
+end
+```
+
+**Rule:** Sign-up redirect → custom RegistrationsController. Sign-in redirect → ApplicationController. Keep both.
+
+### A-7: Multi-Devise Layout Routing (SHOULD)
+
+When an app has multiple Devise scopes needing different layouts, use `layout_by_resource` with `resource_class` checks:
+
+```ruby
+def layout_by_resource
+  if admin_signed_in?
+    "admin"
+  elsif devise_controller?
+    if resource_class == User
+      "user_layout"
+    elsif resource_class == Technician
+      "technician"
+    else
+      "application"
+    end
+  else
+    "application"
+  end
+end
+```
+
+Check `devise_controller?` before accessing `resource_class`. Group by `resource_class`, not `controller_name`.
+
+### A-8: Namespace Conflict — Devise Model as Controller Namespace (MUST)
+
+When a Devise model (e.g., `MilkAdmin`) is used as a controller namespace, use `class Namespace::Controller` syntax. Opening it as a module fails:
+
+```ruby
+# WRONG — TypeError: MilkAdmin is not a module
+module MilkAdmin
+  class RestaurantsController < ApplicationController
+end
+
+# RIGHT
+class MilkAdmin::RestaurantsController < ApplicationController
+```
+
+### A-9: Invitation-Only Auth (SHOULD)
+
+For invite-only apps with no public registration:
+
+1. Remove `:registerable` from the model's `devise` line
+2. `devise_for :users, skip: [ :registrations ]` — `/users/sign_up` returns 404
+3. Delete `registrations/`, `confirmations/`, `unlocks/` view dirs
+4. Shared `_links.html.erb` must NOT render a sign-up link
+5. Dedicated auth layout via `layout :resolve_layout`
+6. Verify boundary: log in as client A, request client B's record — must redirect
+
+### A-10: Authorization with Pundit (SHOULD)
+
+```ruby
+class ApplicationPolicy::Scope
+  def resolve
+    user.admin? ? scope.all : scope.where(user_id: user.id)
+  end
+end
+
+# ApplicationController
+rescue_from Pundit::NotAuthorizedError, with: :user_not_authorized
+def user_not_authorized
+  redirect_back fallback_location: root_path, alert: "Not authorized"
 end
 ```
 
@@ -1550,6 +2226,401 @@ bundle exec brakeman
 
 ---
 
+## 9.5. Deployment
+
+### DP-1: Heroku Deployment Workflow (MUST)
+
+```bash
+# Create Heroku app (if new)
+heroku create app-name
+
+# Set environment variables
+heroku config:set DATABASE_URL="postgres://..." -a app-name
+heroku config:set RAILS_MASTER_KEY=$(cat config/master.key) -a app-name
+heroku config:set API_TOKEN=$(ruby -rsecurerandom -e 'puts SecureRandom.hex(32)') -a app-name
+
+# Deploy (Heroku auto-runs assets:precompile and db:migrate)
+git push heroku main
+
+# Post-deploy
+heroku run bin/rails db:migrate -a app-name  # if migration didn't auto-run
+heroku run bin/rails db:seed -a app-name     # ONLY if seed data is safe (non-destructive)
+```
+
+**NEVER run `heroku run bin/rails db:seed` on an existing production database** — seeds are destructive and will overwrite or duplicate data. Seeds are for fresh databases only.
+
+### DP-2: DATABASE_URL Handling (MUST)
+
+Heroku sets `DATABASE_URL` automatically. If you have a local `DATABASE_URL=` (empty string) in your shell, it breaks Rails commands:
+
+```bash
+# Diagnosis
+env | grep DATABASE
+# DATABASE_URL=    ← empty string is the culprit
+
+# Fix
+unset DATABASE_URL
+```
+
+**Production database.yml:**
+```yaml
+production:
+  primary:
+    url: <%= ENV["DATABASE_URL"] %>
+```
+
+Do NOT add separate `queue:`, `cable:`, `cache:` entries when using a single database. See R8-8 for Solid Trifecta single-database configuration.
+
+### DP-3: Assets and Precompilation (MUST)
+
+Heroku auto-runs `rake assets:precompile` on deploy. Ensure:
+
+1. `app/assets/config/manifest.js` exists with `//= link_tree ../images` (see R8-6)
+2. `bin/rails tailwindcss:build` runs successfully locally (no errors)
+3. No new uncommitted image assets — Propshaft discovers assets at boot time
+
+### DP-4: Production Origins for Action Cable (MUST)
+
+```ruby
+# config/environments/production.rb
+config.action_cable.allowed_request_origins = [
+  "https://app-name.herokuapp.com",
+  /https:\/\/app-name.*\.herokuapp\.com/,
+  "https://custom-domain.com"
+]
+```
+
+### DP-5: CI Auto-Deploy (SHOULD)
+
+RML projects use GitHub Actions CI that auto-deploys to Heroku on push to `main`. The workflow:
+1. Push to feature branch
+2. CI runs: `scan_ruby` (Brakeman), `lint` (RuboCop), `test` (RSpec)
+3. All checks pass → merge to main
+4. CI auto-deploys to Heroku
+5. Main stays demo-ready at all times
+
+**Never push directly to Heroku.** Push to GitHub only — CI handles the deploy.
+
+### DP-6: Gemfile Changes and CI Frozen Mode (MUST)
+
+On CI (GitHub Actions with `bundler-cache: true`), bundler runs in deployment/frozen mode. ANY change to the Gemfile triggers frozen mode, which refuses to update the lockfile.
+
+**Symptom:** Every CI job fails at `bundle install` with exit code 16.
+
+**Fix:** Bump the version in `Gemfile.lock` only, leave the Gemfile unchanged:
+1. Keep the Gemfile as-is (no version constraint changes)
+2. Run `bundle install` locally to update `Gemfile.lock`
+3. Commit only the changed `Gemfile.lock`
+
+If you can't run `bundle install` locally (Ruby version mismatch):
+```bash
+RBENV_VERSION=3.3.7 rbenv exec bundle install
+```
+
+---
+
+## 9.6. New Project Setup Checklist
+
+When creating a new Rails 8 project, follow these steps in order:
+
+### Step 1: Generate the App
+
+```bash
+rails new app_name -d postgresql -j importmap --css tailwind
+cd app_name
+```
+
+### Step 2: Database Configuration
+
+```yaml
+# config/database.yml — use custom defaults
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  host: localhost
+  username: postgres
+  password: postgres
+
+development:
+  <<: *default
+  database: app_name_development
+
+test:
+  <<: *default
+  database: app_name_test
+
+production:
+  primary:
+    url: <%= ENV["DATABASE_URL"] %>
+```
+
+### Step 3: Install Stimulus and Importmap
+
+```bash
+bin/rails importmap:install
+bin/rails stimulus:install:importmap
+```
+
+Verify:
+```bash
+cat config/importmap.rb          # Has @hotwired/turbo-rails pin
+cat app/javascript/application.js # Imports turbo-rails
+ls app/javascript/controllers/   # Has index.js, application.js
+```
+
+### Step 4: Solid Trifecta (Single Database)
+
+Follow R8-8 to consolidate Solid Queue, Cache, and Cable into the primary database.
+
+### Step 5: Asset Manifest
+
+```bash
+mkdir -p app/assets/config
+echo '//= link_tree ../images' > app/assets/config/manifest.js
+```
+
+### Step 6: Devise (if needed)
+
+```bash
+bundle add devise
+bin/rails g devise:install
+bin/rails g devise User
+bin/rails g devise:views users
+```
+
+Set `config.scoped_views = true` in `config/initializers/devise.rb` (see A-4).
+
+### Step 7: Essential Gems
+
+```ruby
+# Gemfile
+group :development, :test do
+  gem "rspec-rails"
+  gem "factory_bot_rails"
+  gem "bullet"  # N+1 detection
+end
+
+group :development do
+  gem "web-console"
+end
+
+group :test do
+  gem "brakeman", require: false
+end
+```
+
+### Step 8: CI Setup
+
+```bash
+# .github/workflows/ci.yml — scan_ruby (Brakeman), lint (RuboCop), test (RSpec)
+```
+
+### Step 9: Tailwind Theme
+
+```css
+/* app/assets/tailwind/application.css */
+@import "tailwindcss";
+
+@theme {
+  --color-<name>: #<hex>;
+  --font-<name>: "Font Name", sans-serif;
+}
+```
+
+---
+
+## 9.7. Common Pitfalls (Battle-Tested)
+
+These pitfalls have caused real development delays across RML projects. Each one is a silent failure — no error, just wrong behavior.
+
+### P-1: Namespaced Model Foreign Keys (MUST)
+
+When a model is namespaced (e.g., `CarUs::Shop` → table `car_us_shops`), `t.references :shop` in a migration references `shops` (the default table) — not `car_us_shops`.
+
+**Symptom:** `PG::UndefinedTable: ERROR: relation "shops" does not exist`
+
+**Fix:** Always specify `foreign_key: { to_table: :actual_table_name }`:
+```ruby
+# WRONG
+t.references :shop, null: false, foreign_key: true
+
+# RIGHT
+t.references :shop, null: false, foreign_key: { to_table: :car_us_shops }
+```
+
+**Rule:** Any `t.references` or `add_reference` targeting a namespaced model MUST specify `foreign_key: { to_table: :prefixed_table_name }`. This is the #1 cause of migration failures in namespaced subprojects.
+
+### P-2: Scope Called on Association Proxy (MUST)
+
+Model scopes are defined on the model class, not on association proxies. Calling `.active` on an association raises `NoMethodError`.
+
+```ruby
+# WRONG — NoMethodError on CollectionProxy
+shop.services.active
+
+# RIGHT — define the scope on the model
+class Service < ApplicationRecord
+  scope :active, -> { where(active: true) }
+end
+# Now: shop.services.active works
+```
+
+### P-3: `order(:virtual_method)` Fails (MUST)
+
+Ruby methods defined on the model (e.g., `display_name`) are NOT database columns. Using them in `.order()` produces `PG::UndefinedColumn`.
+
+```ruby
+# WRONG — PG::UndefinedColumn
+@technicians = shop.technicians.order(:display_name)
+
+# RIGHT — order by real column
+@technicians = shop.technicians.order(:email)
+
+# OR sort in Ruby (for computed values)
+@technicians = shop.technicians.to_a.sort_by(&:display_name)
+```
+
+### P-4: `Rails.cache.fetch` Caches Nil (MUST)
+
+`Rails.cache.fetch(key) { expensive_call }` caches ANY return value, including `nil` and `false`. If the first call fails, subsequent calls return cached nil forever.
+
+```ruby
+# WRONG — caches nil forever
+Rails.cache.fetch("key", expires_in: 365.days) do
+  external_api_call  # returns nil on failure → cached nil
+end
+
+# RIGHT — read first, write only on success
+cached = Rails.cache.read("key")
+return cached if cached.present?
+
+result = external_api_call
+Rails.cache.write("key", result, expires_in: 365.days) if result.present?
+result
+```
+
+### P-5: Brakeman `LinkToHref` False Positive (SHOULD)
+
+When a view uses a model attribute as `link_to` href, Brakeman flags it as "Potentially unsafe model attribute." View-level and model-level guards don't break the data-flow trace.
+
+**Fix — ApplicationHelper method (breaks Brakeman's data flow):**
+```ruby
+# app/helpers/application_helper.rb
+def safe_external_url(url)
+  return nil if url.blank?
+  return url if url.start_with?("http://", "https://")
+  nil
+end
+```
+
+```erb
+<%# WRONG — Brakeman traces through model methods %>
+<% if url = @partner.safe_website %>
+  <%= link_to url, url, ... %>
+<% end %>
+
+<%# RIGHT — helper breaks the trace %>
+<% if url = safe_external_url(@partner.website) %>
+  <%= link_to url, url, target: "_blank", rel: "noopener" %>
+<% end %>
+```
+
+### P-6: Model/Module Namespace Conflict (MUST)
+
+Ruby can't have both a class and a module with the same name. If `Restaurant` is a model (class), you can't have `module Restaurant` for controllers.
+
+```ruby
+# WRONG — TypeError: Restaurant is not a module
+module Restaurant
+  class PagesController < ApplicationController
+end
+
+# RIGHT — use plural for namespace
+module Restaurants
+  class PagesController < ApplicationController
+end
+```
+
+**Rule:** Never use a model name as a module namespace. Always use plural.
+
+### P-7: Propshaft Missing New Assets (SHOULD)
+
+Propshaft only discovers new assets on server boot, not on the fly. If you add new images and get `Propshaft::MissingAssetError`, restart the server.
+
+### P-8: Shell `&` in Rails Runner (SHOULD)
+
+Categories with `&` in names (e.g., "Wings & Sides") break inline `rails runner`. Write to a temp file instead:
+```bash
+echo 'cat = MenuCategory.find_by(name: "Wings & Sides"); cat.update(sort_order: 3)' > /tmp/seed_fix.rb
+bin/rails runner /tmp/seed_fix.rb
+```
+
+### P-9: Controller Helper Methods (SHOULD)
+
+View helpers like `strip_tags` and `truncate` must use `helpers.` prefix in controllers:
+```ruby
+# WRONG
+strip_tags(params[:name])
+
+# RIGHT
+helpers.strip_tags(params[:name])
+```
+
+### P-10: Backfill After Adding `on: :create` Callbacks (SHOULD)
+
+When you add `validates :slug, presence: true` and `before_validation :generate_slug, on: :create`, existing records won't have slugs. The callback only fires on create.
+
+**Symptom:** `ActionController::UrlGenerationError — No route matches {:slug=>nil}` when linking to existing records.
+
+**Fix:** Backfill existing data after adding the callback.
+
+### P-11: New Database Column — 4 Places to Update (MUST)
+
+When you add a column via migration, update ALL four places:
+1. **Migration** — create the column
+2. **Model** — add validations if needed
+3. **Controller** — add to strong params `permit(...)` whitelist
+4. **View form** — add the input field to `_form.html.erb`
+
+**Symptom if missed:** Form submits but new value is silently discarded.
+
+### P-12: `image_tag` Leading Slash (SHOULD)
+
+```erb
+<%# WRONG — looks in public/ not asset pipeline %>
+<%= image_tag "/reference/photo.jpg" %>
+
+<%# RIGHT — resolves through asset pipeline %>
+<%= image_tag "reference/photo.jpg", alt: "Description" %>
+```
+
+Never use a leading slash in `image_tag`. Always include an `alt` attribute for accessibility.
+
+### P-13: Fixed Bottom Nav — Use `fixed` Not `mt-auto` (SHOULD)
+
+`mt-auto` in a flex column only works when content is shorter than the viewport. When content overflows, `mt-auto` places the nav after scrollable content. Use `fixed bottom-0 inset-x-0 z-50` and add `pb-20` to the outer container.
+
+### P-14: Test Fixture Maintenance (MUST)
+
+When model constraints change, test fixtures silently break. After adding `validates :slug, presence: true` or `add_index :table, :slug, unique: true`, update fixtures:
+- Make fixture data unique for indexed columns
+- Use real human-readable values that trigger callbacks correctly
+- Run the full test suite after adding ANY model constraint
+
+**Also:** Auto-generated fixtures reference ORIGINAL migration column names. If you edit a migration after generation, manually update the fixtures. Check:
+```bash
+grep -r "removed_column_name" test/fixtures/
+```
+
+### P-15: `replace_all=true` on ERB Templates (MUST)
+
+Using `replace_all=true` on ERB templates can leave orphan `<% end %>` tags that break the Ruby parser. Brakeman catches these in CI with `parse error on value "end" (kEND)` — but they pass visual review and local server rendering.
+
+**Rule:** Never use `replace_all` on ERB templates. For surgical changes, ensure `old_string` is unique. After any ERB edit, run `bundle exec brakeman --no-pager` before pushing.
+
+---
+
 ## 10. Git & Commits
 
 ### GH-1: Conventional Commits (MUST)
@@ -1690,6 +2761,26 @@ app/
 
 ---
 
+## Pre-Commit Checklist
+
+Before committing any Rails change:
+
+- [ ] No `style=""` attributes (except dynamic values)
+- [ ] All repeated elements are partials
+- [ ] Stimulus controllers use proper data-action syntax
+- [ ] Layout file only has partials + yield
+- [ ] importmap.rb has `@hotwired/turbo-rails` pinned
+- [ ] application.js imports turbo-rails
+- [ ] All Tailwind classes, no inline styles
+- [ ] Test fixtures updated for new model constraints or associations
+- [ ] Run `bundle exec brakeman --no-pager` if any `.erb` or `.rb` files changed
+- [ ] Run `bundle exec rubocop` if any `.rb` files changed
+- [ ] Gemfile.lock committed (not Gemfile changes) — see DP-6
+- [ ] `app/assets/config/manifest.js` exists with `//= link_tree ../images`
+- [ ] No AI tool references in commit messages (GH-2)
+
+---
+
 ## Remember Shortcuts (Optional)
 
 The following shortcuts can be invoked at any time to trigger specific workflows.
@@ -1782,17 +2873,12 @@ Update CLAUDE.md before every git commit.
 
 Follow this checklist for writing your commit message:
 - MUST use Conventional Commits format: https://www.conventionalcommits.org/en/v1.0.0
-- MUST NOT refer to Claude or Anthropic in the commit message.
+- MUST NOT refer to Claude, Anthropic, or any AI tool in the commit message.
 - MUST structure commit message as follows:
 
 <type>[optional scope]: <description>
 
 [optional body]
-
-🤖 Generated with Claude Code assistance.
-
-Authored-By: Mason <rogue.media.lab@gmail.com>
-Co-Authored-By: Claude <noreply@anthropic.com>
 
 Commit types (this correlates with Semantic Versioning):
 - feat: introduces a new feature (MINOR version)
@@ -1806,11 +2892,6 @@ feat(soundscape): add recently played section
 - Create PlayHistory model with user associations
 - Add Stimulus controller for tracking plays
 - Include Turbo Stream updates for real-time display
-
-🤖 Generated with Claude Code assistance.
-
-Authored-By: Mason <rogue.media.lab@gmail.com>
-Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 ---
@@ -1871,6 +2952,21 @@ Brakeman's Ruby parser can choke on escaped quotes inside ERB double-quoted stri
 ```bash
 bin/brakeman --no-pager  # exit code 0 = clean, 0 warnings
 ```
+
+**Brakeman `LinkToHref` false positive:**
+When a view uses a model attribute as the href in `link_to`, Brakeman flags it as "Potentially unsafe model attribute" (Weak confidence). This blocks CI. Fix: Use a helper method (`safe_external_url`) that breaks Brakeman's data-flow trace. See P-5.
+
+**Brakeman ERB parse errors (orphan `end` tags):**
+If Brakeman reports `parse error on value "end" (kEND)`:
+1. Run `bundle exec brakeman --no-pager` locally
+2. At the reported line, trace the ERB block structure — count `if`/`each`/`do` opens vs `end` closes
+3. The stray `end` is always one too many — remove it
+4. Re-run Brakeman to confirm 0 errors
+Typically caused by `replace_all=true` on ERB templates (see P-15).
+
+### GitHub Actions: Frozen Bundler Mode
+
+On CI with `bundler-cache: true`, ANY Gemfile change triggers frozen mode, which refuses to update the lockfile. All CI jobs fail at `bundle install` with exit code 16. Fix: Bump version in `Gemfile.lock` only, leave Gemfile unchanged. See DP-6.
 
 ### Running both checks locally before push:
 ```bash
