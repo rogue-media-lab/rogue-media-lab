@@ -46,7 +46,7 @@ Nobody left guessing.
 Streamlit/Python workflow tool for US notary publics. State-agnostic. AI-assisted.
 Does what it says.
 
-**Waypoint** *(internal)*
+**[Waypoint](https://github.com/rogue-media-lab/waypoint)**
 A Shop assistant used at work on my mobile phone in Discord. A Hermes agent running a Open Router model. I have built several skills, scripts and a SQL database to allow me to track my work and better perform my automotive duties at work, providing better customer service.
 
 ***
