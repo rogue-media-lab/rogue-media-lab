@@ -23,12 +23,7 @@ The studio's headquarters. Client showcase, onboarding, project portal, and blog
 Sub-project previews for each active initiative live here — a window into what's being built
 before it's ready to exist on its own.
 
-**RML Voyager**
-A dedicated platform for the sailing YouTube community. One destination for creators to
-manage content, grow their audience, and monetize — without surrendering the algorithm.
-YouTube handles the storage. We handle everything else.
-
-**RML Soundscape**
+**RML Zoundscape**
 A marketplace for *soundscapes* — limited-edition pairings of original audio and visual art.
 Musicians and digital artists, together. Your music collection, personalized.
 Not a stream. An experience.
@@ -51,9 +46,8 @@ Nobody left guessing.
 Streamlit/Python workflow tool for US notary publics. State-agnostic. AI-assisted.
 Does what it says.
 
-**Wayland** *(internal)*
-Proprietary AI operations CLI. Integrates Claude and Gemini for studio management
-and active development. Not for public deployment.
+**Waypoint** *(internal)*
+A Shop assistant used at work on my mobile phone in Discord. A Hermes agent running a Open Router model. I have built several skills, scripts and a SQL database to allow me to track my work and better perform my automotive duties at work, providing better customer service.
 
 ***
 
