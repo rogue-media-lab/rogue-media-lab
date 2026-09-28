@@ -28,15 +28,22 @@ A marketplace for *soundscapes* — limited-edition pairings of original audio a
 Musicians and digital artists, together. Your music collection, personalized.
 Not a stream. An experience.
 
+_The Zoundscape platform will use the Zuke media player that has been built into the lab.
+You can find a demo of the player here._
+
 **RML Hermit Plus**
 A fan platform built for the Hermitcraft community. Season lore, hermit tracking,
 fan art discovery and sales, and a place for the community to actually gather.
 Built by a fan. For fans.
 
+_You can find a demo of Season 8 in the lab._
+
 **RML Carus**
 Vehicle maintenance, reimagined around the customer. Connects service advisors,
 technicians, and car owners into a single shared view. Everyone in the loop.
 Nobody left guessing.
+
+_Demo for CarUs coming soon!_
 
 ***
 
